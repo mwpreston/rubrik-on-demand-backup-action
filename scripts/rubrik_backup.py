@@ -4,42 +4,73 @@ import requests
 
 
 # -----------------------------
-# Small helpers (readability)
+# Helpers
 # -----------------------------
 
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
 
-def sleep10():
-    # You asked to avoid extra libs; this works fine on ubuntu-latest runners.
-    os.system("sleep 10")
+def sleep_seconds(seconds: int) -> None:
+    # No extra imports per your constraints; works on ubuntu-latest.
+    os.system(f"sleep {int(seconds)}")
 
 
-def normalize_base_uri(uri):
+def normalize_base_uri(uri: str) -> str:
     return (uri or "").strip().rstrip("/")
 
 
-def str_to_bool(value, default=True):
+def str_to_bool(value: str, default: bool = True) -> bool:
     """
-    Interprets typical GitHub Actions string inputs.
-    - "false" (any case) -> False
-    - anything else -> True
+    GitHub Action inputs are strings.
+    Treat 'false' (case-insensitive) as False, everything else as True.
     """
     if value is None:
         return default
     return value.strip().lower() != "false"
 
 
-def post_graphql(rsc_uri, token, query, variables, timeout=30):
+def is_transient_activityseries_500(errors) -> bool:
     """
-    Posts a GraphQL request to RSC and returns the parsed JSON.
-    Consistently handles HTTP + JSON + GraphQL errors.
+    Detect the specific transient failure you saw:
+    - message: 'An unexpected internal error occurred.'
+    - path: ['activitySeries']
+    - extensions.code: 500
+    """
+    try:
+        for e in errors or []:
+            if e.get("path") == ["activitySeries"]:
+                ext = e.get("extensions") or {}
+                code = ext.get("code")
+                msg = (e.get("message") or "").lower()
+                if code == 500 and "unexpected internal error" in msg:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def extract_trace_id(errors):
+    try:
+        if not errors:
+            return None
+        ext = (errors[0].get("extensions") or {})
+        trace = (ext.get("trace") or {})
+        return trace.get("traceId")
+    except Exception:
+        return None
+
+
+def post_graphql(rsc_uri: str, token: str, query: str, variables: dict, timeout: int = 30):
+    """
+    General GraphQL POST helper.
+    Returns parsed JSON dict on success, or None on any failure (prints to stderr).
     """
     url = f"{rsc_uri}/api/graphql"
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "Accept": "application/json",
     }
     payload = {"query": query, "variables": variables}
 
@@ -72,11 +103,11 @@ def get_access_token(rsc_uri, client_id, client_secret):
     payload = {
         "client_id": client_id,
         "client_secret": client_secret,
-        "grant_type": "client_credentials",
+        "grant_type": "client_credentials"
     }
-    resp = requests.post(url, json=payload, timeout=30)
-    resp.raise_for_status()
-    return resp.json().get("access_token")
+    response = requests.post(url, json=payload, timeout=30)
+    response.raise_for_status()
+    return response.json().get("access_token")
 
 
 # -----------------------------
@@ -95,7 +126,7 @@ def get_rubrik_sla_domain_id(rsc_uri, token, sla_name):
     }
     """.strip()
 
-    # Keeping your variable structure as-is (since you said it works)
+    # Keeping your variable structure as-is (no query changes)
     variables = {
         "filter": {
             "field": "NAME",
@@ -116,19 +147,16 @@ def get_rubrik_sla_domain_id(rsc_uri, token, sla_name):
     if not nodes:
         return None
 
-    # Return first match
     return nodes[0].get("id")
 
 
 def get_rubrik_repo_id(rsc_uri, token, github_repo):
-    """
-    Searches RSC for the GitHub repository ID.
-    github_repo can be 'owner/repo' or just 'repo' — we use repo name for NAME filter.
-    """
+    """Searches RSC for the GitHub repository ID using the full name."""
     if not github_repo:
         eprint("get_rubrik_repo_id: github_repo must be provided")
         return None
 
+    # Extract only the repository name if input includes owner (e.g., 'owner/repo' -> 'repo')
     repo_name = github_repo.split("/")[-1]
 
     query = """
@@ -167,7 +195,6 @@ def get_rubrik_repo_id(rsc_uri, token, github_repo):
     if not nodes:
         return None
 
-    # Return first match
     return nodes[0].get("id")
 
 
@@ -177,7 +204,7 @@ def get_rubrik_repo_id(rsc_uri, token, github_repo):
 
 def trigger_on_demand_snapshot(rsc_uri, token, repo_id, sla_domain_id):
     """
-    Triggers the on-demand snapshot and returns taskchainId (activitySeriesId).
+    Triggers the on-demand snapshot and returns taskchainId.
     """
     mutation = """
     mutation GithubTakeOnDemandSnapshotMutation($input: BackupDevOpsRepositoryInput!) {
@@ -213,11 +240,18 @@ def trigger_on_demand_snapshot(rsc_uri, token, repo_id, sla_domain_id):
     return taskchain_id
 
 
-def wait_for_activity_series(rsc_uri, token, activity_series_id):
+def wait_for_activity_series(rsc_uri, token, activity_series_id, poll_seconds=10):
     """
     Polls EventSeriesDetailsQuery until lastActivityStatus is exactly 'Success' or 'Failure'.
-    Returns 'Success' or 'Failure' on completion.
+    IMPORTANT: Handles transient 'activitySeries' GraphQL 500 errors by sleeping and retrying.
     """
+    url = f"{rsc_uri}/api/graphql"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
     query = """
     query EventSeriesDetailsQuery($activitySeriesId: UUID!, $clusterUuid: UUID) {
       activitySeries(
@@ -241,18 +275,41 @@ def wait_for_activity_series(rsc_uri, token, activity_series_id):
         "clusterUuid": "00000000-0000-0000-0000-000000000000"
     }
 
-    # Prime status
-    status = None
+    payload = {"query": query, "variables": variables}
 
+    status = None
     while status not in ("Success", "Failure"):
-        result = post_graphql(rsc_uri, token, query, variables)
-        if not result:
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            eprint(f"retrieve task status: request failed: {e}")
+            return None
+
+        try:
+            result = resp.json()
+        except ValueError:
+            eprint("retrieve task status: response was not valid JSON")
+            return None
+
+        if result.get("errors"):
+            # NEW: Treat specific activitySeries 500 as transient
+            if is_transient_activityseries_500(result["errors"]):
+                trace_id = extract_trace_id(result["errors"])
+                if trace_id:
+                    print(f"activitySeries not ready yet (transient 500). traceId={trace_id}. Waiting…")
+                else:
+                    print("activitySeries not ready yet (transient 500). Waiting…")
+                sleep_seconds(poll_seconds)
+                continue
+
+            eprint(f"retrieve task status: GraphQL errors: {result['errors']}")
             return None
 
         try:
             status = result["data"]["activitySeries"]["lastActivityStatus"]
         except (TypeError, KeyError):
-            eprint(f"wait_for_activity_series: unexpected response shape: {result}")
+            eprint(f"retrieve task status: unexpected response shape: {result}")
             return None
 
         print("Current Job Status:", status)
@@ -260,18 +317,15 @@ def wait_for_activity_series(rsc_uri, token, activity_series_id):
         if status in ("Success", "Failure"):
             break
 
-        sleep10()
+        sleep_seconds(poll_seconds)
 
     return status
 
 
 def take_on_demand_snapshot(rsc_uri, token, repo_id, sla_domain_id, wait_for_completion):
     """
-    Triggers snapshot; optionally waits.
-    Returns:
-      - 'Triggered' if not waiting
-      - 'Success' or 'Failure' if waiting completes
-      - None on error
+    Triggers the on-demand snapshot; optionally waits for Success/Failure.
+    Returns 'Triggered' if not waiting, else 'Success' or 'Failure'.
     """
     taskchain_id = trigger_on_demand_snapshot(rsc_uri, token, repo_id, sla_domain_id)
     if not taskchain_id:
@@ -280,12 +334,12 @@ def take_on_demand_snapshot(rsc_uri, token, repo_id, sla_domain_id, wait_for_com
     print("Triggered taskchain ID:", taskchain_id)
 
     # Give the series a moment to appear (your original behavior)
-    sleep10()
+    sleep_seconds(10)
 
     if not wait_for_completion:
         return "Triggered"
 
-    return wait_for_activity_series(rsc_uri, token, taskchain_id)
+    return wait_for_activity_series(rsc_uri, token, taskchain_id, poll_seconds=10)
 
 
 # -----------------------------
@@ -300,13 +354,17 @@ def main():
     sla_domain_name = (os.getenv("RUBRIK_SLA_DOMAIN_NAME") or "").strip()
     wait_for_completion = str_to_bool(os.getenv("WAIT_FOR_COMPLETION", "true"), default=True)
 
-    # Basic validation
     missing = []
-    if not rsc_uri: missing.append("RUBRIK_RSC_URI")
-    if not client_id: missing.append("RUBRIK_CLIENT_ID")
-    if not client_secret: missing.append("RUBRIK_CLIENT_SECRET")
-    if not github_repo: missing.append("GITHUB_REPO_NAME")
-    if not sla_domain_name: missing.append("RUBRIK_SLA_DOMAIN_NAME")
+    if not rsc_uri:
+        missing.append("RUBRIK_RSC_URI")
+    if not client_id:
+        missing.append("RUBRIK_CLIENT_ID")
+    if not client_secret:
+        missing.append("RUBRIK_CLIENT_SECRET")
+    if not github_repo:
+        missing.append("GITHUB_REPO_NAME")
+    if not sla_domain_name:
+        missing.append("RUBRIK_SLA_DOMAIN_NAME")
 
     if missing:
         eprint("Missing required environment variables:", ", ".join(missing))
@@ -336,9 +394,6 @@ def main():
             eprint("Backup failed due to earlier error.")
             return 1
 
-        # GitHub Actions semantics:
-        # - if wait=false, Triggered is a success
-        # - if wait=true, Success is success; Failure fails the workflow
         if not wait_for_completion:
             print("✅ Backup triggered successfully (not waiting). Status:", final_status)
             return 0
