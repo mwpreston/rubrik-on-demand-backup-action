@@ -31,7 +31,7 @@ runs:
       shell: bash
 
     - name: Run Rubrik On-Demand Backup
-      run: python scripts/rubrik_backup.py
+      run: python ${{ github.action_path }}/scripts/rubrik_backup.py
       shell: bash
       env:
         RUBRIK_RSC_URI: ${{ inputs.rsc-uri }}
