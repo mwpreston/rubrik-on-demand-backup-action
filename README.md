@@ -17,11 +17,32 @@ The workflow fails if the backup does not succeed.
 ## Example
 
 ```yaml
-- uses: mwpreston/rubrik-on-demand-backup-action@v1
-  with:
-    rsc-uri: ${{ secrets.RUBRIK_RSC_URI }}
-    client-id: ${{ secrets.RUBRIK_CLIENT_ID }}
-    client-secret: ${{ secrets.RUBRIK_CLIENT_SECRET }}
-    repository: ${{ github.repository }}
-    sla-name: Gold
-    wait: true
+name: Rubrik On-Demand Backup
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run Rubrik On-Demand Backup
+        uses: mwpreston/rubrik-on-demand-backup-action@main
+        with:
+          rsc-uri: ${{ secrets.RUBRIK_RSC_URI }}
+          client-id: ${{ secrets.RUBRIK_CLIENT_ID }}
+          client-secret: ${{ secrets.RUBRIK_CLIENT_SECRET }}
+          repository: ${{ github.repository }}
+          sla-name: "Gold"
+          wait: "true"
