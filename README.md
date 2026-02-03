@@ -24,4 +24,4 @@ The workflow fails if the backup does not succeed.
     client-secret: ${{ secrets.RUBRIK_CLIENT_SECRET }}
     repository: ${{ github.repository }}
     sla-name: Gold
-    wait: "true"
+    wait: true

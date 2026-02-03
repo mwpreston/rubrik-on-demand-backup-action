@@ -7,19 +7,19 @@ import requests
 # Helpers
 # -----------------------------
 
+# send error output to stderr
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
-
+# sleep helper
 def sleep_seconds(seconds: int) -> None:
-    # No extra imports per your constraints; works on ubuntu-latest.
     os.system(f"sleep {int(seconds)}")
 
-
+# normalize base URI by stripping trailing slashes if present
 def normalize_base_uri(uri: str) -> str:
     return (uri or "").strip().rstrip("/")
 
-
+# converts GitHub Action string inputs to boolean
 def str_to_bool(value: str, default: bool = True) -> bool:
     """
     GitHub Action inputs are strings.
@@ -29,14 +29,10 @@ def str_to_bool(value: str, default: bool = True) -> bool:
         return default
     return value.strip().lower() != "false"
 
-
+# Sometimes a transient error occurs immediately after triggering a backup.
+# This condition is expected due to eventual consistency and should be retried
+# rather than treated as a terminal failure.
 def is_transient_activityseries_500(errors) -> bool:
-    """
-    Detect the specific transient failure you saw:
-    - message: 'An unexpected internal error occurred.'
-    - path: ['activitySeries']
-    - extensions.code: 500
-    """
     try:
         for e in errors or []:
             if e.get("path") == ["activitySeries"]:
@@ -49,7 +45,7 @@ def is_transient_activityseries_500(errors) -> bool:
         pass
     return False
 
-
+# Pulls the backend traceId from a GraphQL error (when available) for diagnostics.
 def extract_trace_id(errors):
     try:
         if not errors:
@@ -60,7 +56,7 @@ def extract_trace_id(errors):
     except Exception:
         return None
 
-
+# Send POST requests to GraphQL endpoint
 def post_graphql(rsc_uri: str, token: str, query: str, variables: dict, timeout: int = 30):
     """
     General GraphQL POST helper.
@@ -98,6 +94,7 @@ def post_graphql(rsc_uri: str, token: str, query: str, variables: dict, timeout:
 # Auth
 # -----------------------------
 
+# Obtain OAuth access token
 def get_access_token(rsc_uri, client_id, client_secret):
     url = f"{rsc_uri}/api/client_token"
     payload = {
@@ -114,6 +111,7 @@ def get_access_token(rsc_uri, client_id, client_secret):
 # Lookups
 # -----------------------------
 
+# Get SLA Domain ID by name
 def get_rubrik_sla_domain_id(rsc_uri, token, sla_name):
     query = """
     query GetSLADomainID($filter: [GlobalSlaFilterInput!]) {
@@ -149,7 +147,7 @@ def get_rubrik_sla_domain_id(rsc_uri, token, sla_name):
 
     return nodes[0].get("id")
 
-
+# Get GitHub Repository ID by full name (e.g. 'owner/repo')
 def get_rubrik_repo_id(rsc_uri, token, github_repo):
     """Searches RSC for the GitHub repository ID using the full name."""
     if not github_repo:
@@ -202,6 +200,7 @@ def get_rubrik_repo_id(rsc_uri, token, github_repo):
 # Backup + Monitor
 # -----------------------------
 
+# Trigger the on-demand snapshot and return the taskchainId for monitoring
 def trigger_on_demand_snapshot(rsc_uri, token, repo_id, sla_domain_id):
     """
     Triggers the on-demand snapshot and returns taskchainId.
@@ -239,7 +238,7 @@ def trigger_on_demand_snapshot(rsc_uri, token, repo_id, sla_domain_id):
 
     return taskchain_id
 
-
+# Polls EventSeriesDetailsQuery until lastActivityStatus is exactly 'Success' or 'Failure'.
 def wait_for_activity_series(rsc_uri, token, activity_series_id, poll_seconds=10):
     """
     Polls EventSeriesDetailsQuery until lastActivityStatus is exactly 'Success' or 'Failure'.
@@ -321,7 +320,7 @@ def wait_for_activity_series(rsc_uri, token, activity_series_id, poll_seconds=10
 
     return status
 
-
+# Wrapper logic around taking and waiting for snapshots
 def take_on_demand_snapshot(rsc_uri, token, repo_id, sla_domain_id, wait_for_completion):
     """
     Triggers the on-demand snapshot; optionally waits for Success/Failure.
