@@ -1,7 +1,13 @@
 # Rubrik On-Demand Backup Action
 
-Trigger and monitor an on-demand Rubrik backup for a GitHub repository.  
-The workflow fails if the backup does not succeed.
+Hey - Before you push to main why not get a complete backup of your entire GitHub repository?
+
+Well, using this, you can!
+
+Integrate this into your GitHub action workflows to trigger a Rubrik On-Demand Snapshot of the repository before you merge. 
+
+Don't let data protection be an afterthought!
+
 
 ## Inputs
 
